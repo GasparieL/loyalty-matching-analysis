@@ -76,3 +76,4 @@ python noloyalty_bankclients.py
 ## Output
 
 All output files are saved to the `./data/` directory, which is created automatically if it doesn't exist.
+# loyalty-matching-analysis
