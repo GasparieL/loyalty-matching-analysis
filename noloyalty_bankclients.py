@@ -30,8 +30,43 @@ warnings.filterwarnings('ignore')
 plt.style.use('default')
 sns.set_palette("husl")
 
-# Configuration - use same data directory
-DATA_DIR = Path("analysis_data")
+# Configuration - Portable data directory setup
+def get_data_directory():
+    """
+    Find data directory in multiple possible locations:
+    1. ./analysis_data (relative to script location)
+    2. ./analysis_data (relative to current working directory)
+    3. ../analysis_data (one level up from script)
+    4. Any subdirectory containing .parquet or .pkl files
+    """
+    # Get script directory
+    script_dir = Path(__file__).parent.resolve()
+    cwd = Path.cwd()
+
+    # Possible data directory locations (in order of preference)
+    possible_dirs = [
+        script_dir / "analysis_data",      # Same directory as script
+        cwd / "analysis_data",              # Current working directory
+        script_dir.parent / "analysis_data", # One level up
+        script_dir / "data",                # Alternative name
+        cwd / "data",                       # Alternative name in cwd
+    ]
+
+    # Check for existing data directory
+    for dir_path in possible_dirs:
+        if dir_path.exists() and dir_path.is_dir():
+            # Check if it contains expected data files
+            has_data = any(dir_path.glob("*.parquet")) or any(dir_path.glob("*.pkl"))
+            if has_data:
+                print(f"Using data directory: {dir_path}")
+                return dir_path
+
+    # If no existing directory found, use script directory
+    default_dir = script_dir / "analysis_data"
+    print(f"Will use data directory: {default_dir}")
+    return default_dir
+
+DATA_DIR = get_data_directory()
 
 
 def load_dataframe(filename_base):
@@ -377,21 +412,204 @@ def print_cash_loyalty_summary(results):
     print(f"\n{'='*70}")
 
 
-def run_cash_loyalty_analysis():
-    """Run complete analysis"""
+def load_facts_from_database(server_ip='192.168.20.9', database='ORINABIJI_DWH',
+                            start_date='2025-01-01', end_date='2025-12-31'):
+    """Load facts data from database with customer_id"""
+    print(f"\n=== FETCHING FACTS DATA FROM DATABASE ===")
+    print(f"Server: {server_ip}, Database: {database}")
+    print(f"Date range: {start_date} to {end_date}")
+
+    try:
+        from pathlib import Path
+        import pyodbc
+
+        def connect_server(ip, database):
+            conn_str = (
+                "Driver={SQL Server};"
+                "Server=" + ip + ";"
+                "Database=" + database + ";"
+                "Trusted_Connection=yes;"
+            )
+            conn = pyodbc.connect(conn_str)
+            cursor = conn.cursor()
+            return conn, cursor
+
+        def sql_to_pandas(conn, cursor, sql_string):
+            import pandas as pd
+            cursor.execute(sql_string)
+            rows = cursor.fetchall()
+            if rows:
+                return pd.DataFrame.from_records(rows, columns=[desc[0] for desc in cursor.description])
+            return pd.DataFrame()
+
+        conn, cursor = connect_server(server_ip, database)
+        print("✓ Connected successfully")
+
+        sql_facts = f"""
+        SELECT
+            a.cheque_id,
+            CAST(a.is_loyalty AS INT) as is_loyalty,
+            a.discount_card_no,
+            c.customer_id,
+            CAST(a.reference_number AS NVARCHAR(50)) as reference_number,
+            SUM(CAST(a.price AS DECIMAL(15,2))) AS total_price,
+            COUNT(*) AS item_count
+        FROM dbo.facts a
+        LEFT JOIN loyalty.cards c ON a.discount_card_no = c.card_no
+        WHERE YEAR(a.date) = 2025
+            AND a.date >= '{start_date}'
+            AND a.date <= '{end_date}'
+            AND a.reference_number IS NOT NULL
+            AND a.reference_number != ''
+            AND c.customer_id IS NOT NULL
+        GROUP BY a.cheque_id, a.is_loyalty, a.discount_card_no, c.customer_id, a.reference_number
+        """
+
+        facts_df = sql_to_pandas(conn, cursor, sql_facts)
+        print(f"✓ Fetched {len(facts_df):,} records")
+
+        if not facts_df.empty:
+            facts_df['reference_number'] = facts_df['reference_number'].astype(str).str.strip()
+            facts_df['customer_id'] = facts_df['customer_id'].astype(str).str.strip()
+            facts_df = facts_df[facts_df['reference_number'] != 'nan']
+            facts_df = facts_df[facts_df['reference_number'] != '']
+            facts_df = facts_df[facts_df['customer_id'] != 'nan']
+            facts_df = facts_df[facts_df['customer_id'] != '']
+
+            # Save using the module's save function
+            try:
+                facts_df.to_parquet(DATA_DIR / "facts_data_2025_combined_customer_id.parquet", index=False)
+                print(f"✓ Saved to {DATA_DIR / 'facts_data_2025_combined_customer_id.parquet'}")
+            except:
+                import pickle
+                with open(DATA_DIR / "facts_data_2025_combined_customer_id.pkl", 'wb') as f:
+                    pickle.dump(facts_df, f)
+                print(f"✓ Saved to {DATA_DIR / 'facts_data_2025_combined_customer_id.pkl'}")
+
+        cursor.close()
+        conn.close()
+        return facts_df
+
+    except Exception as e:
+        print(f"✗ ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def load_bank_from_database(server_ip='192.168.20.9', database='ORINABIJI_DWH'):
+    """Load bank data from database"""
+    print(f"\n=== FETCHING BANK DATA FROM DATABASE ===")
+    print(f"Server: {server_ip}, Database: {database}")
+
+    try:
+        import pyodbc
+
+        def connect_server(ip, database):
+            conn_str = (
+                "Driver={SQL Server};"
+                "Server=" + ip + ";"
+                "Database=" + database + ";"
+                "Trusted_Connection=yes;"
+            )
+            conn = pyodbc.connect(conn_str)
+            cursor = conn.cursor()
+            return conn, cursor
+
+        def sql_to_pandas(conn, cursor, sql_string):
+            import pandas as pd
+            cursor.execute(sql_string)
+            rows = cursor.fetchall()
+            if rows:
+                return pd.DataFrame.from_records(rows, columns=[desc[0] for desc in cursor.description])
+            return pd.DataFrame()
+
+        conn, cursor = connect_server(server_ip, database)
+        print("✓ Connected successfully")
+
+        sql_bank = """
+        SELECT DISTINCT
+            CAST(reference_number AS NVARCHAR(50)) as reference_number,
+            CAST(transaction_amount AS DECIMAL(15,2)) as transaction_amount,
+            CAST(bank_name AS NVARCHAR(100)) as bank_name,
+            CAST(client AS NVARCHAR(100)) as client
+        FROM bank_data.bank_transactions
+        WHERE reference_number IS NOT NULL
+            AND reference_number != ''
+            AND client IS NOT NULL
+            AND client != ''
+            AND bank_name IS NOT NULL
+            AND bank_name != ''
+        """
+
+        bank_df = sql_to_pandas(conn, cursor, sql_bank)
+        print(f"✓ Fetched {len(bank_df):,} records")
+
+        if not bank_df.empty:
+            bank_df['reference_number'] = bank_df['reference_number'].astype(str).str.strip()
+            bank_df['client'] = bank_df['client'].astype(str).str.strip()
+            bank_df['bank_name'] = bank_df['bank_name'].astype(str).str.strip()
+            bank_df = bank_df[bank_df['reference_number'] != 'nan']
+            bank_df = bank_df[bank_df['client'] != 'nan']
+            bank_df = bank_df[bank_df['bank_name'] != 'nan']
+
+            try:
+                bank_df.to_parquet(DATA_DIR / "bank_data_combined.parquet", index=False)
+                print(f"✓ Saved to {DATA_DIR / 'bank_data_combined.parquet'}")
+            except:
+                import pickle
+                with open(DATA_DIR / "bank_data_combined.pkl", 'wb') as f:
+                    pickle.dump(bank_df, f)
+                print(f"✓ Saved to {DATA_DIR / 'bank_data_combined.pkl'}")
+
+        cursor.close()
+        conn.close()
+        return bank_df
+
+    except Exception as e:
+        print(f"✗ ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def run_cash_loyalty_analysis(server_ip='192.168.20.9', database='ORINABIJI_DWH', force_reload=False):
+    """
+    Run complete analysis - loads from saved files or fetches from database
+
+    Parameters:
+    - server_ip: SQL Server IP (default: '192.168.20.9')
+    - database: Database name (default: 'ORINABIJI_DWH')
+    - force_reload: Force reload from database even if files exist (default: False)
+    """
     print("RUNNING CUSTOMER-BANK CONNECTION ANALYSIS")
     print("="*60)
 
-    # Load data
-    facts_df = load_dataframe("facts_data_2025_combined_customer_id")
-    bank_df = load_dataframe("bank_data_combined")
+    if force_reload:
+        print("Force reload requested - fetching fresh data from database...")
+        facts_df = None
+        bank_df = None
+    else:
+        print(f"Data directory: {DATA_DIR.resolve()}")
+        facts_df = load_dataframe("facts_data_2025_combined_customer_id")
+        bank_df = load_dataframe("bank_data_combined")
 
     if facts_df is None or bank_df is None:
-        print("ERROR: Could not find saved data")
-        print("Expected files in './analysis_data/' directory:")
-        print("  - facts_data_2025_combined_customer_id.parquet (or .pkl)")
-        print("  - bank_data_combined.parquet (or .pkl)")
-        return None
+        print("\nNo presaved data found - fetching from database...")
+
+        if facts_df is None:
+            facts_df = load_facts_from_database(server_ip, database)
+
+        if bank_df is None:
+            bank_df = load_bank_from_database(server_ip, database)
+
+        if facts_df is None or bank_df is None:
+            print("\n✗ ERROR: Failed to load data!")
+            print("\nPlease check:")
+            print("  1. Database connection settings")
+            print("  2. Network connectivity")
+            print(f"  3. Access to {server_ip}")
+            return None
 
     print(f"Loaded data successfully:")
     print(f"  Facts: {len(facts_df):,} records")
