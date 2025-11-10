@@ -254,14 +254,26 @@ def analyze_cash_vs_loyalty_patterns(facts_df, bank_df, chunk_size=1000000):
     # Get detailed stats for bank cards without loyalty
     print(f"\nCreating bank card summaries...")
 
-    bank_no_loyalty_stats = bank_no_loyalty_transactions.groupby('client').agg({
-        'transaction_amount': ['count', 'sum', 'mean'],
-        'bank_name': lambda x: list(x.unique()),
-        'reference_number': lambda x: list(x.unique())
-    }).reset_index()
+    # Aggregate transaction stats first
+    transaction_stats = bank_no_loyalty_transactions.groupby('client')['transaction_amount'].agg(
+        transaction_count='count',
+        total_amount='sum',
+        avg_amount='mean'
+    ).reset_index()
 
-    bank_no_loyalty_stats.columns = ['client', 'transaction_count', 'total_amount',
-                                      'avg_amount', 'banks_used', 'reference_numbers']
+    # Aggregate bank names and reference numbers separately
+    bank_names = bank_no_loyalty_transactions.groupby('client')['bank_name'].apply(
+        lambda x: list(x.unique())
+    ).reset_index()
+    bank_names.columns = ['client', 'banks_used']
+
+    ref_numbers = bank_no_loyalty_transactions.groupby('client')['reference_number'].apply(
+        lambda x: list(x.unique())
+    ).reset_index()
+    ref_numbers.columns = ['client', 'reference_numbers']
+
+    # Merge all together
+    bank_no_loyalty_stats = transaction_stats.merge(bank_names, on='client').merge(ref_numbers, on='client')
     bank_no_loyalty_stats['banks_count'] = bank_no_loyalty_stats['banks_used'].apply(len)
     bank_no_loyalty_stats['references_count'] = bank_no_loyalty_stats['reference_numbers'].apply(len)
 
