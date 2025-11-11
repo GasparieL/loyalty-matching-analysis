@@ -254,26 +254,28 @@ def analyze_cash_vs_loyalty_patterns(facts_df, bank_df, chunk_size=1000000):
     # Get detailed stats for bank cards without loyalty
     print(f"\nCreating bank card summaries...")
 
-    # Aggregate transaction stats first
-    transaction_stats = bank_no_loyalty_transactions.groupby('client')['transaction_amount'].agg(
-        transaction_count='count',
-        total_amount='sum',
-        avg_amount='mean'
-    ).reset_index()
+    # Use groupby with separate operations for compatibility across pandas versions
+    grouped = bank_no_loyalty_transactions.groupby('client')
 
-    # Aggregate bank names and reference numbers separately
-    bank_names = bank_no_loyalty_transactions.groupby('client')['bank_name'].apply(
-        lambda x: list(x.unique())
-    ).reset_index()
-    bank_names.columns = ['client', 'banks_used']
+    # Transaction statistics
+    transaction_count = grouped['transaction_amount'].count()
+    total_amount = grouped['transaction_amount'].sum()
+    avg_amount = grouped['transaction_amount'].mean()
 
-    ref_numbers = bank_no_loyalty_transactions.groupby('client')['reference_number'].apply(
-        lambda x: list(x.unique())
-    ).reset_index()
-    ref_numbers.columns = ['client', 'reference_numbers']
+    # Bank names and reference numbers as lists
+    banks_used = grouped['bank_name'].apply(lambda x: list(x.unique()))
+    reference_numbers = grouped['reference_number'].apply(lambda x: list(x.unique()))
 
-    # Merge all together
-    bank_no_loyalty_stats = transaction_stats.merge(bank_names, on='client').merge(ref_numbers, on='client')
+    # Combine into single dataframe
+    bank_no_loyalty_stats = pd.DataFrame({
+        'client': transaction_count.index,
+        'transaction_count': transaction_count.values,
+        'total_amount': total_amount.values,
+        'avg_amount': avg_amount.values,
+        'banks_used': banks_used.values,
+        'reference_numbers': reference_numbers.values
+    })
+
     bank_no_loyalty_stats['banks_count'] = bank_no_loyalty_stats['banks_used'].apply(len)
     bank_no_loyalty_stats['references_count'] = bank_no_loyalty_stats['reference_numbers'].apply(len)
 

@@ -18,7 +18,12 @@ Output files:
 
 import pandas as pd
 import numpy as np
-import pyodbc
+try:
+    import pyodbc
+    PYODBC_AVAILABLE = True
+except ImportError:
+    PYODBC_AVAILABLE = False
+    print("Warning: pyodbc not available - database fetching will not work")
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -26,7 +31,11 @@ import os
 from pathlib import Path
 import pickle
 import json
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
 import warnings
 
 warnings.filterwarnings('ignore')
